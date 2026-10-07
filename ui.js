@@ -219,6 +219,7 @@
     ];
     await Promise.all(jobs);
     btn.classList.remove('spin'); btn.disabled = false;
+    $('#export').disabled = !(state.local || state.global || state.curves || state.rates);
   }
 
   function rerenderCharts() {
@@ -226,6 +227,69 @@
     if (state.curves) renderCurves(state.curves);
     if (state.rates) renderRates(state.rates);
   }
+
+  /* ---------- exportar a Excel ---------- */
+  function exportExcel() {
+    if (typeof XLSX === 'undefined') { alert('No se pudo cargar la librería de Excel. Probá recargar la página.'); return; }
+    const wb = XLSX.utils.book_new();
+    const P = D.PERIODS;
+    const PCT = '0.00%', PCT1 = '0.0%';
+    // da formato a celdas numéricas de las columnas indicadas
+    const fmt = (ws, cols, z, firstRow = 1) => {
+      const r = XLSX.utils.decode_range(ws['!ref']);
+      for (let R = firstRow; R <= r.e.r; R++) for (const C of cols) {
+        const c = ws[XLSX.utils.encode_cell({ r: R, c: C })];
+        if (c && c.t === 'n') c.z = z;
+      }
+    };
+    const add = (name, aoa, widths, pctCols, z = PCT, firstRow = 1) => {
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      if (pctCols) fmt(ws, pctCols, z, firstRow);
+      ws['!cols'] = widths.map(w => ({ wch: w }));
+      XLSX.utils.book_append_sheet(wb, ws, name);
+    };
+    const asOf = state.local ? fdate(state.local.asOf) : '';
+    if (state.local) {
+      const a = state.local.anchors;
+      add('Retornos locales', [
+        ['Retorno total por período — activos locales', '', '', '', '', ''],
+        ['Datos al ' + asOf, '', '', '', '', ''],
+        [],
+        ['Activo', ...P, 'Nota'],
+        ...state.local.rows.map(r => [r.label, ...P.map(p => r.values[p] ?? null), r.chained ? 'Índice encadenado en: ' + r.chained.join(', ') : '']),
+        [],
+        ['Desde', ...P.map(p => fdate(a[p]))],
+      ], [24, 10, 10, 10, 10, 36], [1, 2, 3, 4], PCT, 4);
+      const det = [['Grupo', 'Período', 'Desde', 'Bono', 'Retorno total']];
+      state.local.rows.forEach(r => P.forEach(p => (r.detail?.[p] || []).forEach(x => det.push([r.label, p, fdate(a[p]), x.t, x.r]))));
+      add('Detalle por bono', det, [22, 8, 12, 10, 14], [4]);
+    }
+    if (state.global) {
+      add('Internacionales', [['Activo', ...P], ...state.global.map(r => [r.label, ...P.map(p => r.values[p] ?? null)])], [32, 10, 10, 10, 10], [1, 2, 3, 4]);
+    }
+    if (state.curves) {
+      const rows = [['Curva', 'Serie', 'Ticker', 'Duration (años)', 'TIR (TEA)', 'Vencimiento']];
+      state.curves.forEach(cv => cv.series.forEach(s => s.data.forEach(p => rows.push([cv.title, s.name, p.t, +p.x.toFixed(4), p.y, p.mat || '']))));
+      add('Curvas', rows, [20, 26, 10, 15, 12, 14], [4]);
+      const ws = wb.Sheets['Curvas']; fmt(ws, [3], '0.00');
+    }
+    if (state.rates) {
+      const dates = [...new Set(state.rates.flatMap(s => s.data.map(d => d[0])))].sort((x, y) => x - y);
+      const maps = state.rates.map(s => new Map(s.data));
+      const rows = [['Fecha', ...state.rates.map(s => s.name + ' (TEA)')],
+        ...dates.map(t => [t / 86400000 + 25569, ...maps.map(m => m.get(t) ?? null)])]; // fecha como serial de Excel
+      const ws = XLSX.utils.aoa_to_sheet(rows);
+      fmt(ws, state.rates.map((_, k) => k + 1), PCT);
+      const r = XLSX.utils.decode_range(ws['!ref']);
+      for (let R = 1; R <= r.e.r; R++) { const c = ws[XLSX.utils.encode_cell({ r: R, c: 0 })]; if (c) c.z = 'dd/mm/yyyy'; }
+      ws['!cols'] = [{ wch: 12 }, ...state.rates.map(() => ({ wch: 16 }))];
+      XLSX.utils.book_append_sheet(wb, ws, 'Tasas históricas');
+    }
+    if (!wb.SheetNames.length) { alert('Todavía no hay datos cargados.'); return; }
+    const d = state.local ? new Date(state.local.asOf).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10);
+    XLSX.writeFile(wb, `Monitor_Dinamica_${d}.xlsx`);
+  }
+  $('#export').onclick = exportExcel;
   $('#refresh').onclick = loadAll;
   $('#theme').onclick = () => {
     const root = document.documentElement;
